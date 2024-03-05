@@ -1,11 +1,10 @@
 cmake_minimum_required(VERSION 3.14)
 
-project (LearningPZ LANGUAGES C CXX)
+project (OtiTopo LANGUAGES C CXX)
 
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
+# set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Finding the pz package
 find_package(NeoPZ REQUIRED HINTS ../NeoPZ_install ../neopz_install)
@@ -19,9 +18,16 @@ file(GLOB_RECURSE PZ_SRC
 )
 add_custom_target( GlobalFiles SOURCES ${PZ_SRC})
 
+# include_directories(
+# 	"${PROJECT_SOURCE_DIR}"
+# )
+
 
 # creating the projects
-add_executable(pztest pztest.cpp)
-target_link_libraries(pztest PUBLIC NeoPZ::pz)
-#target_include_directories(pztest PUBLIC ${PZ_INCLUDE_DIRS})
-#target_include_directories(pztest PUBLIC ${CMAKE_SOURCE_DIR}/sources)
+add_executable(oti-topo otitopo.cpp)
+target_link_libraries(oti-topo PUBLIC NeoPZ::pz)
+
+add_executable(darcyzinho darcyzinho.cpp)
+target_link_libraries(darcyzinho PUBLIC NeoPZ::pz)
+
+
