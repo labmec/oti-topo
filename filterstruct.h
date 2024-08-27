@@ -13,15 +13,23 @@ struct FilterStruct {
     FilterStruct() : findex(-1), fsumHf(0.) {
     }
 
-    REAL ComputeFiltereddcdxe(TPZVec<REAL> &dcdxf, TPZVec<REAL>& xf){
+    REAL ComputeFiltereddcdxe(TPZVec<REAL> &dcdxf, TPZVec<REAL>& xf, TPZCompMesh* cmesh) {
 
+        TPZGeoMesh* gmesh = cmesh->Reference();
         REAL xe = xf[findex];
         REAL sum = 0.;
+        if (fneighIndexHf.size() == 0) {
+            return dcdxf[findex];
+        }
         for (const auto& neighIndexHf : fneighIndexHf) {
-            int neighIndex = neighIndexHf.first;
+            int64_t neighIndex = neighIndexHf.first;
             REAL Hfneigh = neighIndexHf.second;
-            REAL xneigh = xf[neighIndex];
-            REAL dcdxneigh = dcdxf[neighIndex];
+            if (Hfneigh < 0) DebugStop(); // what happened? It is defined as rmin - distcenters and should only be here if positeve
+            TPZCompEl* cel = gmesh->Element(neighIndex)->Reference();
+            if(!cel) continue;
+            const int64_t celindex = cel->Index(); // geoel and compel indexes are not the same
+            REAL xneigh = xf[celindex];
+            REAL dcdxneigh = dcdxf[celindex];
             sum += Hfneigh * xneigh * dcdxneigh;
         }
 
@@ -62,6 +70,17 @@ struct FilterStruct {
                     TPZGeoElSide nodeside(gel,iside);
                     TPZGeoElSide neighbour = nodeside.Neighbour();
                     if (neighbour.Element()->HasSubElement()) {
+                        TPZStack<TPZGeoEl*> subels;                        
+                        // Get all the youngest children and insert them in the tocheck set
+                        neighbour.Element()->YoungestChildren(subels);
+                        for (auto subel : subels) {
+                            if (subel->Dimension() == gmesh->Dimension()) {
+                                int64_t neighindex = subel->Index();
+                                if (checked.find(neighindex) == checked.end() && included.find(neighindex) == included.end()) {
+                                    tocheck.insert(neighindex);
+                                }
+                            }
+                        }
                         continue;
                     }
                     while(neighbour != nodeside) {
