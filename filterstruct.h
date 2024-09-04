@@ -15,7 +15,7 @@ struct FilterStruct {
 
     REAL ComputeFiltereddcdxe(TPZVec<REAL> &dcdxf, TPZVec<REAL>& xf, TPZCompMesh* cmesh) {
 
-        TPZGeoMesh* gmesh = cmesh->Reference();
+        // TPZGeoMesh* gmesh = cmesh->Reference();
         REAL xe = xf[findex];
         REAL sum = 0.;
         if (fneighIndexHf.size() == 0) {
@@ -25,7 +25,7 @@ struct FilterStruct {
             int64_t neighIndex = neighIndexHf.first;
             REAL Hfneigh = neighIndexHf.second;
             if (Hfneigh < 0) DebugStop(); // what happened? It is defined as rmin - distcenters and should only be here if positeve
-            TPZCompEl* cel = gmesh->Element(neighIndex)->Reference();
+            TPZCompEl* cel = cmesh->Element(neighIndex);
             if(!cel) continue;
             const int64_t celindex = cel->Index(); // geoel and compel indexes are not the same
             REAL xneigh = xf[celindex];
@@ -46,7 +46,9 @@ struct FilterStruct {
     }
 
     void ComputeNeighIndexHf(TPZGeoMesh* gmesh, REAL rmin) {
-        TPZGeoEl* geo = gmesh->ElementVec()[findex];
+        TPZCompMesh* cmesh = gmesh->Reference();
+        TPZCompEl* cel = cmesh->Element(findex);
+        TPZGeoEl* geo = cel->Reference();
         TPZGeoElSide geoside(geo);
         TPZManVector<REAL,3> rootcenter(3,0.);
         geoside.CenterX(rootcenter);
@@ -55,7 +57,8 @@ struct FilterStruct {
         std::set<int64_t> tocheck, included, checked;
         tocheck.insert(findex);
         while (tocheck.size()) {
-            TPZGeoEl* gel = gmesh->ElementVec()[*tocheck.begin()];
+            TPZCompEl* celcheck = cmesh->Element(*tocheck.begin());
+            TPZGeoEl* gel = celcheck->Reference();
             tocheck.erase(tocheck.begin());
             TPZGeoElSide gelside(gel);
             gelside.CenterX(centerneigh);
@@ -63,8 +66,8 @@ struct FilterStruct {
             REAL Hf = rmin - d;
             // std::cout << "Hf " << Hf << " d " << d << " rmin " << rmin << std::endl;
             if (Hf > 0) {
-                included.insert(gel->Index());
-                fneighIndexHf.push_back(std::make_pair(gel->Index(),Hf));
+                included.insert(celcheck->Index());
+                fneighIndexHf.push_back(std::make_pair(celcheck->Index(),Hf));
                 fsumHf += Hf;
                 for (int iside = 0; iside < gel->NCornerNodes(); iside++) {
                     TPZGeoElSide nodeside(gel,iside);
@@ -75,7 +78,7 @@ struct FilterStruct {
                         neighbour.Element()->YoungestChildren(subels);
                         for (auto subel : subels) {
                             if (subel->Dimension() == gmesh->Dimension()) {
-                                int64_t neighindex = subel->Index();
+                                int64_t neighindex = subel->Reference()->Index();
                                 if (checked.find(neighindex) == checked.end() && included.find(neighindex) == included.end()) {
                                     tocheck.insert(neighindex);
                                 }
@@ -84,8 +87,8 @@ struct FilterStruct {
                         continue;
                     }
                     while(neighbour != nodeside) {
-                        if (neighbour.Element()->Dimension() == gmesh->Dimension()) {
-                            int64_t neighindex = neighbour.Element()->Index();
+                        if (neighbour.Element()->Dimension() == gmesh->Dimension() && neighbour.Element()->Reference()) {
+                            int64_t neighindex = neighbour.Element()->Reference()->Index();
                             // std::cout << "Verifying neighbour " << neighindex << std::endl;
                             if (checked.find(neighindex) == checked.end() && included.find(neighindex) == included.end()) {
                                 // std::cout << "Inserting neighbour " << neighindex << std::endl;
@@ -98,7 +101,7 @@ struct FilterStruct {
                 }                
             }
             else {
-                checked.insert(gel->Index());
+                checked.insert(gel->Reference()->Index());
             }
         }
 
