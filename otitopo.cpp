@@ -92,7 +92,7 @@ int main() {
     bool isReadFromGmsh = true;
     TPZGeoMesh* gmesh = nullptr;
     if (isReadFromGmsh) {
-        gmesh = ReadMeshFromGmsh("beam80_40.msh");
+        gmesh = ReadMeshFromGmsh("../meshes/beam80_40.msh");
         // gmesh = ReadMeshFromGmsh("../meshes/beam_unstructured.msh");         
     }
     else{
