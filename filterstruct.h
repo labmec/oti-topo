@@ -13,10 +13,11 @@ struct FilterStruct {
     FilterStruct() : findex(-1), fsumHf(0.) {
     }
 
-    REAL ComputeFiltereddcdxe(TPZVec<REAL> &dcdxf, TPZVec<REAL>& xf, TPZCompMesh* cmesh) {
+    REAL ComputeFiltereddcdxe(TPZVec<REAL> &dcdxf, TPZVec<REAL>& xf, TPZVec<REAL>& elvolvec, TPZCompMesh* cmesh) {
 
         // TPZGeoMesh* gmesh = cmesh->Reference();
-        REAL xe = xf[findex];
+        const REAL xe = xf[findex];
+        const REAL myvol = elvolvec[findex];
         REAL sum = 0.;
         if (fneighIndexHf.size() == 0) {
             return dcdxf[findex];
@@ -30,10 +31,11 @@ struct FilterStruct {
             const int64_t celindex = cel->Index(); // geoel and compel indexes are not the same
             REAL xneigh = xf[celindex];
             REAL dcdxneigh = dcdxf[celindex];
-            sum += Hfneigh * xneigh * dcdxneigh;
+            REAL volneigh = elvolvec[celindex];
+            sum += Hfneigh * xneigh * dcdxneigh * volneigh;
         }
-
-        sum /= (fsumHf*xe);
+        
+        sum /= (fsumHf*xe*myvol);
         return sum;
     }
 

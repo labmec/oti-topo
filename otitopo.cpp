@@ -50,7 +50,8 @@ TPZCompMesh* CreateH1CMesh(TPZGeoMesh* gmesh, const int pord, TElasticity2DAnaly
 void SolveProblemDirect(TPZLinearAnalysis &an, TPZCompMesh *cmesh);
 void PrintResults(TPZLinearAnalysis &an, TPZCompMesh *cmesh);
 void SetPointBC(TPZGeoMesh *gr, TPZVec<REAL> &x, int bc);
-const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cmesh, bool isUpdate, TPZVec<FilterStruct> &filterVec, TPZVec<std::set<int>> &neighVec);
+const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cmesh, bool isUpdate, TPZVec<FilterStruct> &filterVec, 
+                                         TPZVec<std::set<int>> &neighVec, TPZStack<REAL>& volfracvec, TPZStack<REAL>& cvec, int& cNiterConverged);
 void GetSolVec(TPZInterpolationSpace* intel, TPZFMatrix<STATE>& u);
 REAL calcVol(TPZCompMesh *cmesh);
 void CreateFilterVec(TPZGeoMesh* gmesh, TPZVec<FilterStruct> &filterVec, REAL rmin);
@@ -58,7 +59,9 @@ const bool RefineElements(const REAL rhovartol, TPZGeoMesh* gmesh, TPZVec<std::s
 void CheckRefinedNeighbors(TPZGeoMesh* gmesh, TPZVec<REAL> &rhovecnew);
 void UpdateSonsMemory(TPZCompMesh* cmesh, TPZVec<int64_t>& subindexes, REAL rhofather);
 void InitializeElemSolOfRefElements(TPZCompMesh* cmesh);
+void InitializeElemSolOfElementsToVal(TPZCompMesh* cmesh, const REAL val);
 void CreateNeighVec(TPZVec<std::set<int>>& neighVec, TPZGeoMesh* gmesh);
+void calculateTotalEnergy(TPZCompMesh* cmesh);
 
 // ------------------ Global parameters ----------
 // -----------------------------------------------
@@ -66,9 +69,11 @@ void CreateNeighVec(TPZVec<std::set<int>>& neighVec, TPZGeoMesh* gmesh);
 REAL gVolInit = 0.;
 const int global_nthread = 8;
 const bool isUseFilter = true;
-const bool isUseRef = false;
-const bool isRefInitMesh = true;
+const bool isUseRef = true;
+const bool isRefInitMesh = false;
+// const std::string plotfile = "postprocess_noref";
 const std::string plotfile = "postprocess_ref";
+// const std::string plotfile = "postprocess_uns";
 
 // ------------------ Main -----------------------
 // -----------------------------------------------
@@ -80,14 +85,15 @@ int main() {
 #endif
     
     const int pord = 1;
-    const int niterations = 140;    
+    const int niterations = 400;    
     int ndivx = 25, ndivy = 50;    
     const REAL filterRadius = 1.5;
 
     bool isReadFromGmsh = true;
     TPZGeoMesh* gmesh = nullptr;
     if (isReadFromGmsh) {
-        gmesh = ReadMeshFromGmsh("beam80_40.msh");        
+        gmesh = ReadMeshFromGmsh("beam80_40.msh");
+        // gmesh = ReadMeshFromGmsh("../meshes/beam_unstructured.msh");         
     }
     else{
         gmesh = CreateGMesh(ndivx,ndivy);
@@ -134,42 +140,6 @@ int main() {
     elas->fProblemType = TElasticity2DAnalytic::EStretchx;
     TPZCompMesh* cmeshH1 = CreateH1CMesh(gmesh,pord,elas);
 
-    if (0)
-    {
-        // get second connect of first son in sons
-        TPZGeoEl* gel = sons[0];
-        TPZCompEl* cel = gel->Reference();
-        TPZInterpolationSpace* intel = dynamic_cast<TPZInterpolationSpace*>(cel);
-        if (!intel) DebugStop();
-        TPZConnect &c = intel->Connect(2);
-        int64_t cind = intel->ConnectIndex(2);
-        TPZFMatrix<STATE> depmat(1,1,0.25);        
-        int indextosave = -1;
-        for (int is = 0; is < sons.size(); is++) {
-            TPZGeoEl* gelnext = sons[is];
-            TPZCompEl* celnext = gelnext->Reference();
-            TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
-            TPZInterpolationSpace* intelnext = dynamic_cast<TPZInterpolationSpace*>(celnext);
-            TPZMatWithMem<TPZOtiTopoDensity>* mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
-            TPZVec<int64_t> indices;
-            celmem->GetMemoryIndices(indices);
-            if(is == 0){
-                indextosave = indices[0];
-            }
-            else{
-                indices[0] = indextosave;
-                celmem->SetMemoryIndices(indices);
-            }
-            // TPZOtiTopoDensity &densstruct = mat->MemItem(indices[0]);
-            // const STATE dens = densstruct.fDen;
-            if (!intelnext) DebugStop();
-            TPZConnect &c2 = intelnext->Connect(is);
-            int64_t c2ind = intelnext->ConnectIndex(is);
-            c.AddDependency(cind, c2ind, depmat, 0, 0, 1, 1);
-        }
-        cmeshH1->CleanUpUnconnectedNodes();
-        c.Print(*cmeshH1);
-    }
 
     // Compute FilterStruct for all the elements in the mesh
     TPZVec<FilterStruct> filterVec;
@@ -180,14 +150,17 @@ int main() {
     CreateNeighVec(neighVec, gmesh);
 
     TPZLinearAnalysis an(cmeshH1);
-    LoadMemoryIntoElementSolution(an,cmeshH1,false,filterVec,neighVec);        
+    TPZStack<REAL> volfracvec, cvec;
+    int cniterconverged = 0;
+    LoadMemoryIntoElementSolution(an,cmeshH1,false,filterVec,neighVec,volfracvec,cvec,cniterconverged);
     gVolInit = calcVol(cmeshH1);
     PrintResults(an,cmeshH1);
         
+    
     for (int i = 0; i < niterations; i++) {
         std::cout << "***************** Optimization Step " << i << " *****************" << std::endl;
         SolveProblemDirect(an,cmeshH1);
-        const bool isNewMesh = LoadMemoryIntoElementSolution(an,cmeshH1,true,filterVec,neighVec);
+        const bool isNewMesh = LoadMemoryIntoElementSolution(an,cmeshH1,true,filterVec,neighVec,volfracvec,cvec,cniterconverged);
         cout << "Number of elements in cmesh after refine and outside: " << cmeshH1->NElements() << endl;
         if(isNewMesh){
             CreateFilterVec(gmesh, filterVec, filterRadius);
@@ -331,11 +304,13 @@ void PrintResults(TPZLinearAnalysis &an, TPZCompMesh *cmesh) {
 // -----------------------------------------------
 // -----------------------------------------------
 
-const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cmesh, bool isUpdate, TPZVec<FilterStruct> &filterVec, TPZVec<std::set<int>> &neighVec) {
+const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cmesh, bool isUpdate, TPZVec<FilterStruct> &filterVec, 
+                                         TPZVec<std::set<int>> &neighVec, TPZStack<REAL>& volfracvec, TPZStack<REAL>& cvec, int& cNiterConverged) {
     
     TPZSimpleTimer timer("LoadMemoryIntoElementSolution");
     REAL volAtStep = calcVol(cmesh);
     const REAL volFrac = volAtStep/gVolInit;
+    volfracvec.Push(volFrac);
     const STATE mindens = 1.e-3;
     REAL c = 0.;
     REAL energy = 0.;
@@ -378,6 +353,7 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
         const STATE dens = densstruct.fDen;
         const int64_t index = cel->Index();
         if (isUpdate) {
+            elvolvec[index] = gel->Volume();
             TPZElementMatrixT<STATE> ek, ef;
             cel->CalcStiff(ek, ef);
             TPZInterpolationSpace* intel = dynamic_cast<TPZInterpolationSpace*>(cel);
@@ -391,17 +367,23 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
             STATE E = 0.;
             for (int idof = 0; idof < elneq; idof++) {
                 E += u(idof,0) * ku(idof,0);
-            }            
+            }
+            // E /= 100*elvolvec[index];
             
             const REAL p = 3.;
 //            c += pow(dens, p) * E;
             c += E;
             energy += E;
 //            dcvec[cel->Index()] = - p * pow(dens, p-1) * E;
-            dcvec[index] = - p * E / dens;
-            rhovec[index] = densstruct.fDen;
-            elvolvec[index] = gel->Volume();
+
             
+            rhovec[index] = densstruct.fDen;            
+            // REAL scalefac = 1.;
+            // if(gel->LowestFather() != gel){
+            //     scalefac = gel->Volume()/gel->LowestFather()->Volume();
+            // }
+            dcvec[index] = - p * E / dens;
+
 //            elementSol(index,0) = updatedValue;
 //            densstruct.fDen = updatedValue;
         }
@@ -411,6 +393,7 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
             densstruct.fDen = initdens;
         }
     }
+    cvec.Push(c);
 
     // Apply filter    
     if(isUseFilter){
@@ -423,7 +406,7 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
             
             if (filterVec[i].findex == -1) DebugStop();        
 
-            const REAL dcdxe = filterVec[i].ComputeFiltereddcdxe(dcvec, rhovec, cmesh);
+            const REAL dcdxe = filterVec[i].ComputeFiltereddcdxe(dcvec, rhovec, elvolvec, cmesh);
             // if(dcdxe > 0)
             //     DebugStop(); // filter cannot change sign of dc
             dcvecfilter[i] = dcdxe;
@@ -505,26 +488,92 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
         PrintResults(an,cmesh);
     }
 
+    // Check if convergence was reached at this step based on volume fraction and energy
+    const REAL voltol = 1.e-4, ctol = 1e-3;
+    const int niterconvlimit = 8;
+    bool isConv = false;
+    const bool isConvVolFrac = fabs(volFrac - targetVolFrac) < voltol;
+    std::cout << "volFrac = " << volFrac << "\t| target = " << targetVolFrac << std::endl;
+    if (isUpdate && isConvVolFrac) {
+        std::cout << "--------- Volume fraction converged! ---------" << std::endl;
+        std::cout << "volFrac = " << volFrac << std::endl;
+        const REAL ci = cvec.Peek(), cim1 = cvec[cvec.size()-2];
+        const REAL criteria = fabs(ci - cim1) / cim1;
+        std::cout << "criteria = " << criteria << std::endl;
+        if (criteria < ctol) {
+            std::cout << "--------- Energy converged! ---------" << std::endl;            
+            cNiterConverged++;
+            std::cout << "cNiterConverged = " << cNiterConverged << std::endl;
+            if (cNiterConverged > niterconvlimit) {
+                std::cout << "--------- Energy converged for several steps! ---------" << std::endl;            
+                isConv = true;
+            }
+        }
+        else {
+            cNiterConverged = 0;
+        }
+    }
+
+
     // Refine elements that have neighbours with variation of rho bigger than tolerance
     const REAL rhovartol = move/2.;
     TPZGeoMesh* gmesh = cmesh->Reference();
     bool isNewMesh = false;    
-    std::cout << "Number of compels before trying to refine = " << cmesh->NElements() << std::endl; 
-    static int toto = 0;
-    if (toto > -1){ // it will always enter here. Change if you nee
-        if(isUseRef)
-            isNewMesh = RefineElements(rhovartol, gmesh, neighVec, isCompVec, rhovecnew);        
-        if(isNewMesh){
-            toto++;
-        }        
+    std::cout << "Number of compels before trying to refine = " << cmesh->NElements() << std::endl;
+    if (isUseRef && isConv){
+        if(0){
+            isNewMesh = RefineElements(rhovartol, gmesh, neighVec, isCompVec, rhovecnew);
+        }
+        else{
+            isNewMesh = true;
+            const bool interpolatesol = true;
+            const int64_t nel = cmesh->NElements();
+            for (int iel = 0 ; iel < nel; iel++) {
+                TPZCompEl* cel = cmesh->Element(iel);
+                if(!cel) DebugStop();
+                TPZGeoEl* gel = cel->Reference();
+                if(gel->HasSubElement()) continue;                
+                if (!isCompVec[iel]) {
+                    continue;
+                }                                
+                if(!gel) DebugStop();
+                if (gel->Dimension() != gmesh->Dimension()){
+                    DebugStop();
+                }
+                TPZVec<TPZGeoEl*> sons;
+                TPZVec<int64_t> subindexes;        
+                cel->Divide(cel->Index(),subindexes,interpolatesol);
+                UpdateSonsMemory(cmesh,subindexes,rhovecnew[iel]);                
+            }
+            cmesh->InitializeBlock();
+            cmesh->ExpandSolution();
+            cmesh->CleanUpUnconnectedNodes();
+            cmesh->AdjustBoundaryElements();      
+
+            InitializeElemSolOfRefElements(cmesh);
+            InitializeElemSolOfElementsToVal(cmesh,1.);
+        }
     }    
-    std::cout << "Number of compels after trying to refine = " << cmesh->NElements() << std::endl;
     
+    std::cout << "Number of compels after trying to refine = " << cmesh->NElements() << std::endl;
+
     // Print results to Paraview
     if(isNewMesh){
         std::cout << "--------- Mesh has been refined! ---------" << std::endl;
         std::cout << "--------- PostProcess ---------" << std::endl;
-        // PrintResults(an,cmesh);
+        {
+            std::ofstream out("cmesh_posref.txt");
+            cmesh->Print(out);
+        }
+        PrintResults(an,cmesh);
+        std::cout << "c = " << c << std::endl;
+
+        // Compute new energy c and print
+        calculateTotalEnergy(cmesh);
+    }    
+    if(isConv && !isNewMesh){
+        std::cout << "--------- End of refinement process! Should stop code ---------" << std::endl;
+        DebugStop();
     }
 
     std::cout << "c = " << c << std::endl;
@@ -703,7 +752,7 @@ const bool RefineElements(const REAL rhovartol, TPZGeoMesh* gmesh, TPZVec<std::s
     bool isNewMesh = false;
     // std::cout << "Number of elements in gmesh: " << gmesh->NElements() << std::endl;    
     // cout << "Number of elements in cmesh before refine: " << cmesh->NElements() << endl;
-    const bool interpolatesol = false;
+    const bool interpolatesol = true;
     for (auto it = elset.begin(); it != elset.end(); it++) {
         TPZCompEl* cel = cmesh->Element(*it);
         if(!cel) DebugStop();
@@ -791,7 +840,7 @@ void CheckRefinedNeighbors(TPZGeoMesh* gmesh, TPZVec<REAL> &rhovecnew){
             std::cout << "Refining element " << gel->Index() << std::endl;
             if(!cel) DebugStop();
             TPZVec<int64_t> subindexes;
-            const bool interpolatesol = false;
+            const bool interpolatesol = true;
             cel->Divide(celindex,subindexes,interpolatesol);
             UpdateSonsMemory(gmesh->Reference(),subindexes,rhovecnew[celindex]);
         }
@@ -859,6 +908,37 @@ void InitializeElemSolOfRefElements(TPZCompMesh* cmesh) {
 // -----------------------------------------------
 // -----------------------------------------------
 
+void InitializeElemSolOfElementsToVal(TPZCompMesh* cmesh, const REAL val) {
+    if(val < 0 || val > 1) DebugStop();
+    TPZFMatrix<STATE> &elementSol = cmesh->ElementSolution();
+    elementSol.Resize(cmesh->NElements(), 1);
+    for(int64_t i = 0 ; i < cmesh->NElements() ; i++) {
+        TPZCompEl* cel = cmesh->Element(i);
+        if(!cel) continue;
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);
+        if(!celmem && !celmemtri) continue;
+        TPZVec<int64_t> indices;
+        if(celmem) celmem->GetMemoryIndices(indices);
+        else celmemtri->GetMemoryIndices(indices);
+        for(int j = 1 ; j < indices.size() ; j++) {
+            if (indices[0] != indices[j]) {
+                DebugStop(); // assuming same memory for the whole element!
+            }
+        }
+        TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
+        if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
+        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        if(!mat) DebugStop();
+        TPZOtiTopoDensity &densstruct = mat->MemItem(indices[0]);
+        densstruct.fDen = val;
+        elementSol(cel->Index(),0) = val;
+    }    
+}
+
+// -----------------------------------------------
+// -----------------------------------------------
+
 void CreateNeighVec(TPZVec<std::set<int>>& neighVec, TPZGeoMesh* gmesh) {
     TPZCompMesh* cmesh = gmesh->Reference();
     if(!cmesh) DebugStop(); // should be created if this function is being called
@@ -884,6 +964,63 @@ void CreateNeighVec(TPZVec<std::set<int>>& neighVec, TPZGeoMesh* gmesh) {
             }
         }
     }
+}
+
+// -----------------------------------------------
+// -----------------------------------------------
+
+void calculateTotalEnergy(TPZCompMesh* cmesh) {
+    REAL cnew = 0.;
+    TPZFMatrix<STATE> &elementSol = cmesh->ElementSolution();
+    const int64_t nel = cmesh->NElements();
+    elementSol.Resize(nel, 1);
+    for(int64_t i = 0 ; i < nel ; i++) {
+        TPZCompEl* cel = cmesh->Element(i);        
+        if(!cel) continue;
+        TPZGeoEl* gel = cel->Reference();
+        if(gel->HasSubElement()) continue;
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);
+        if(!celmem && !celmemtri) continue;
+        TPZVec<int64_t> indices;
+        if(celmem) celmem->GetMemoryIndices(indices);
+        else celmemtri->GetMemoryIndices(indices);
+            
+        for(int j = 1 ; j < indices.size() ; j++) {
+            if (indices[0] != indices[j]) {
+                DebugStop(); // assuming same memory for the whole element!
+            }
+        }
+        TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
+        if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
+        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        
+        TPZElasticity2D* matElas = nullptr;
+        if(celmem) matElas = dynamic_cast<TPZElasticity2D*>(celmem->Material());
+        else matElas = dynamic_cast<TPZElasticity2D*>(celmemtri->Material());
+
+        if(!mat) DebugStop();
+        if(!matElas) DebugStop();
+        TPZOtiTopoDensity &densstruct = mat->MemItem(indices[0]);
+        const STATE dens = densstruct.fDen;
+        const int64_t index = cel->Index();
+        TPZElementMatrixT<STATE> ek, ef;
+        cel->CalcStiff(ek, ef);
+        TPZInterpolationSpace* intel = dynamic_cast<TPZInterpolationSpace*>(cel);
+        if (!intel) DebugStop();    
+        // const int64_t elneq = intel->NEquations();
+        const int64_t elneq = intel->NShapeF() * matElas->NStateVariables();
+        TPZFMatrix<STATE> u(elneq,1,0.), ku(elneq,1,0.);
+
+        GetSolVec(intel,u);
+        ek.Matrix().Multiply(u, ku);
+        STATE E = 0.;
+        for (int idof = 0; idof < elneq; idof++) {
+            E += u(idof,0) * ku(idof,0);
+        }          
+        cnew += E;        
+    }
+    std:: cout << "cnew = " << cnew << std::endl;
 }
 
 // -----------------------------------------------
