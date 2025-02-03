@@ -22,6 +22,7 @@
 #include "TPZVTKGenerator.h"
 //#include <Elasticity/TPZElasticity3D.h>
 #include <Elasticity/TPZElasticity2DOtiTopo.h>
+#include <Elasticity/TPZElasticity3DOtiTopo.h>
 #include "TPZAnalyticSolution.h"
 #include "TPZGeoMeshTools.h"
 #include <TPZGmshReader.h>
@@ -32,19 +33,21 @@
 #include "TPZCompElH1.h"
 #include "pzshapequad.h"
 #include "pzshapetriang.h"
+#include "pzshapecube.h"
 #include "TPZElementMatrixT.h"
 #include "filterstruct.h"
 #include "TPZRefPatternTools.h"
 
 using namespace std;
 
-enum EMatid {ENone,EDomain,EDispX,EDispY,EDispXY,EPtDispX,EPtDispY,EPtDispXY,EForceX,EForceY,EForceXY,EPtForceX,EPtForceY,EPtForceXY};
+enum EMatid {ENone,EDomain,EDispX,EDispY,EDispXY,EPtDispX,EPtDispY,EPtDispXY,EPtDispXYZ,EForceX,EForceY,EForceZ,EForceXY,EPtForceX,EPtForceY,EPtForceZ,EPtForceXY};
 
 // ------------------ Functions ------------------
 // -----------------------------------------------
 
 TPZGeoMesh* CreateGMesh(int ndivx, int ndivy);
 TPZGeoMesh* ReadMeshFromGmsh(std::string file_name);
+TPZGeoMesh* ReadMeshFromGmsh3D(std::string file_name);
 void CreateBCs(TPZGeoMesh* gmesh);
 TPZCompMesh* CreateH1CMesh(TPZGeoMesh* gmesh, const int pord, TElasticity2DAnalytic *elas);
 void SolveProblemDirect(TPZLinearAnalysis &an, TPZCompMesh *cmesh);
@@ -69,14 +72,15 @@ void calculateTotalEnergy(TPZCompMesh* cmesh);
 REAL gVolInit = 0.;
 const int global_nthread = 8;
 const bool isUseFilter = true;
-const bool isUseRef = true;
+const bool isUseRef = false;
 const bool isRefInitMesh = false;
 const bool isRefInitMeshCmesh = false;
 // const std::string plotfile = "postprocess_noref";
-const std::string plotfile = "postprocess_ref";
+// const std::string plotfile = "postprocess_ref";
 // const std::string plotfile = "postprocess_uns";
 // const std::string plotfile = "postprocess_refgeoel";
 // const std::string plotfile = "postprocess_refgeoel";
+const std::string plotfile = "postprocess_cube";
 
 // ------------------ Main -----------------------
 // -----------------------------------------------
@@ -89,19 +93,19 @@ int main() {
     
     const int pord = 1;
     const int niterations = 400;    
-    int ndivx = 25, ndivy = 50;    
-    const REAL filterRadius = 1.5;
+    REAL filterRadius = 1.5;
 
     bool isReadFromGmsh = true;
+    bool is3D = true;
     TPZGeoMesh* gmesh = nullptr;
-    if (isReadFromGmsh) {
+    if(is3D){
+        filterRadius = 0.15;
+        gmesh = ReadMeshFromGmsh3D("../meshes/cube.msh");
+    }
+    else
         gmesh = ReadMeshFromGmsh("../meshes/beam80_40.msh");
-        // gmesh = ReadMeshFromGmsh("../meshes/beam_unstructured.msh");         
-    }
-    else{
-        gmesh = CreateGMesh(ndivx,ndivy);
-    }
 
+    
     // int firstindex = 0;
     // for(int i = 0 ; i < gmesh->NElements() ; i++){
     //     TPZGeoEl* gel = gmesh->ElementVec()[i];
@@ -175,9 +179,9 @@ int main() {
         cmeshH1->ExpandSolution();
     }
 
-    std::ofstream out("gmesh.vtk"), outcmesh("cmesh.vtk");
+    std::ofstream out("gmesh.vtk");
     TPZVTKGeoMesh::PrintGMeshVTK(gmesh, out);    
-    TPZVTKGeoMesh::PrintCMeshVTK(cmeshH1, outcmesh);
+    // TPZVTKGeoMesh::PrintCMeshVTK(cmeshH1, outcmesh);
 
     // Compute FilterStruct for all the elements in the mesh
     TPZVec<FilterStruct> filterVec;
@@ -244,7 +248,7 @@ TPZGeoMesh* CreateGMesh(int ndivx, int ndivy) {
 // -----------------------------------------------
 
 TPZCompMesh* CreateH1CMesh(TPZGeoMesh* gmesh, const int pord, TElasticity2DAnalytic *elas) {
-
+    
     TPZCompMesh* cmesh = new TPZCompMesh(gmesh);
     const int dim = gmesh->Dimension();
     cmesh->SetDimModel(dim);
@@ -253,14 +257,18 @@ TPZCompMesh* CreateH1CMesh(TPZGeoMesh* gmesh, const int pord, TElasticity2DAnaly
     
     const STATE E = elas->gE, nu = elas->gPoisson;
     TPZManVector<STATE> force = {0,0,0};
-    TPZElasticity2DOtiTopo *mat = new TPZElasticity2DOtiTopo(EDomain, E, nu, 0., 0., true);
-    mat->SetExactSol(elas->ExactSolution(), 2);
+    TPZMaterialT<STATE>* mat = nullptr;
+    if(dim == 3) {
+        TPZManVector<STATE,3> force = {0.,0.,0.};
+        mat = new TPZElasticity3DOtiTopo(EDomain, E, nu, force);
+    }
+    else {
+        mat = new TPZElasticity2DOtiTopo(EDomain, E, nu, 0., 0., true);
+    }
+    // mat->SetExactSol(elas->ExactSolution(), 2);
 //    mat->SetForcingFunction(elas->ForceFunc(), 4);
     cmesh->InsertMaterialObject(mat);
-    
-    TPZFMatrix<STATE> val1(2,2,0.);
-    TPZManVector<STATE> val2(2,0.);
-    
+      
     const int diri = 0, neu = 1, mixed = 2, normaltrac = 4;
 //    auto* BCCond0 = mat->CreateBC(mat, EBC, diri, val1, val2);
     
@@ -268,25 +276,37 @@ TPZCompMesh* CreateH1CMesh(TPZGeoMesh* gmesh, const int pord, TElasticity2DAnaly
 //    cmesh->InsertMaterialObject(BCCond0);
     
     // Pointer bcs
-    val1(1,1) = mat->BigNumber();
-    auto* BCCondFixed1 = mat->CreateBC(mat, EPtDispXY, mixed, val1, val2);
-    cmesh->InsertMaterialObject(BCCondFixed1);
+    if(dim == 2){
+        TPZFMatrix<STATE> val1(2,2,0.);
+        TPZManVector<STATE> val2(2,0.);
+        val1(1,1) = mat->BigNumber();
+        auto* BCCondFixed1 = mat->CreateBC(mat, EPtDispXY, mixed, val1, val2);
+        cmesh->InsertMaterialObject(BCCondFixed1);
+        
+        val1.Zero();
+        val1(0,0) = mat->BigNumber();
+        auto* BCCondSym = mat->CreateBC(mat, EDispX, mixed, val1, val2);
+        cmesh->InsertMaterialObject(BCCondSym);
+        
+        val1.Zero();
+        val2[1] = -1.0;
+        auto* BCCondPoint = mat->CreateBC(mat, EPtForceY, neu, val1, val2);
+        cmesh->InsertMaterialObject(BCCondPoint);
+    }
+    else {
+        TPZFMatrix<STATE> val1(3,3,0.);
+        TPZManVector<STATE> val2(3,0.);        
+        auto* BCCondFixed1 = mat->CreateBC(mat, EPtDispXYZ, diri, val1, val2);
+        cmesh->InsertMaterialObject(BCCondFixed1);
+            
+        val2[2] = -1.0;
+        auto* BCCondPoint = mat->CreateBC(mat, EPtForceZ, neu, val1, val2);
+        cmesh->InsertMaterialObject(BCCondPoint);
+    }
     
-    val1.Zero();
-    val1(0,0) = mat->BigNumber();
-    auto* BCCondSym = mat->CreateBC(mat, EDispX, mixed, val1, val2);
-    cmesh->InsertMaterialObject(BCCondSym);
+    cmesh->AutoBuild();    
     
-    val1.Zero();
-    val2[1] = -1.0;
-    auto* BCCondPoint = mat->CreateBC(mat, EPtForceY, neu, val1, val2);
-    cmesh->InsertMaterialObject(BCCondPoint);
-    
-    cmesh->AutoBuild();
-    //este método é chamado para construir automaticamente a malha computacional com base nas configurações e objetos de material e condição de contorno definidos anteriormente.
-    
-    return cmesh;
-    //a função retorna o ponteiro para a malha computacional cmesh
+    return cmesh;    
 }
 
 // -----------------------------------------------
@@ -366,13 +386,15 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
         TPZCompEl* cel = cmesh->Element(i);        
         if(!cel) continue;
         TPZGeoEl* gel = cel->Reference();
-        if(gel->HasSubElement()) continue;
+        if(gel->HasSubElement()) continue;        
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);
-        if(!celmem && !celmemtri) continue;
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> > *celmemcube = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> >*>(cel);
+        if(!celmem && !celmemtri && !celmemcube) continue;
         TPZVec<int64_t> indices;
         if(celmem) celmem->GetMemoryIndices(indices);
-        else celmemtri->GetMemoryIndices(indices);
+        else if (celmemtri) celmemtri->GetMemoryIndices(indices);
+        else if (celmemcube) celmemcube->GetMemoryIndices(indices);
             
         for(int j = 1 ; j < indices.size() ; j++) {
             if (indices[0] != indices[j]) {
@@ -381,11 +403,16 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
         }
         TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
         if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
-        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemtri) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemcube) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemcube->Material());
         
-        TPZElasticity2D* matElas = nullptr;
-        if(celmem) matElas = dynamic_cast<TPZElasticity2D*>(celmem->Material());
-        else matElas = dynamic_cast<TPZElasticity2D*>(celmemtri->Material());
+        TPZMaterialT<STATE>* matElas = dynamic_cast<TPZMaterialT<STATE>*>(mat);
+        // TPZElasticity2D* matElas = nullptr;
+        // if(celmem) matElas = dynamic_cast<TPZElasticity2D*>(celmem->Material());
+        // else matElas = dynamic_cast<TPZElasticity2D*>(celmemtri->Material());
+
+        
+
 
         if(!mat) DebugStop();
         if(!matElas) DebugStop();
@@ -516,11 +543,13 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
         if(!cel) continue;
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);
-        if(!celmem && !celmemtri) continue;
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> > *celmemcube = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> >*>(cel);
+        if(!celmem && !celmemtri && !celmemcube) continue;
         TPZVec<int64_t> indices;
 
         if(celmem) celmem->GetMemoryIndices(indices);
-        else celmemtri->GetMemoryIndices(indices);
+        else if (celmemtri) celmemtri->GetMemoryIndices(indices);
+        else if (celmemcube) celmemcube->GetMemoryIndices(indices);
 
         for(int j = 1 ; j < indices.size() ; j++) {
             if (indices[0] != indices[j]) {
@@ -530,7 +559,8 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
 
         TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
         if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
-        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemtri) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemcube) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemcube->Material());
         if(!mat) DebugStop();
         TPZOtiTopoDensity &densstruct = mat->MemItem(indices[0]);
 
@@ -704,12 +734,15 @@ REAL calcVol(TPZCompMesh *cmesh) {
         TPZCompEl* cel = cmesh->Element(i);
         if(!cel) continue;
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
-        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);        
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> > *celmemcube = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> >*>(cel);
         // if(!celmem && cel->Reference()->Dimension() == gmesh->Dimension()) DebugStop();
-        if(!celmem && !celmemtri) continue;
+        if(!celmem && !celmemtri && !celmemcube) continue;
         TPZVec<int64_t> indices;
         if (celmem) celmem->GetMemoryIndices(indices);
-        else celmemtri->GetMemoryIndices(indices);
+        else if (celmemtri) celmemtri->GetMemoryIndices(indices);
+        else if (celmemcube) celmemcube->GetMemoryIndices(indices);
+
         for(int j = 1 ; j < indices.size() ; j++) {
             if (indices[0] != indices[j]) {
                 DebugStop(); // assuming same memory for the whole element!
@@ -717,7 +750,8 @@ REAL calcVol(TPZCompMesh *cmesh) {
         }
         TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
         if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
-        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemtri) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemcube) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemcube->Material());
         if(!mat) DebugStop();
         TPZOtiTopoDensity &densstruct = mat->MemItem(indices[0]);
         const STATE dens = densstruct.fDen;
@@ -752,6 +786,38 @@ TPZGeoMesh* ReadMeshFromGmsh(std::string file_name) {
         stringtoint[1]["forcexy"] = EForceXY;
         stringtoint[0]["ptforcex"] = EPtForceX;
         stringtoint[0]["ptforcey"] = EPtForceY;
+        stringtoint[0]["ptforcexy"] = EPtForceXY;
+        reader.SetDimNamePhysical(stringtoint);
+        reader.GeometricGmshMesh(file_name,gmesh);
+    }
+
+    return gmesh;
+}
+
+TPZGeoMesh* ReadMeshFromGmsh3D(std::string file_name) {
+    //read mesh from gmsh
+    TPZGeoMesh *gmesh;
+    gmesh = new TPZGeoMesh();
+    {
+        TPZGmshReader reader;
+        TPZManVector<std::map<std::string,int>,4> stringtoint(13);
+        stringtoint[3]["dom"] = EDomain;
+        
+        stringtoint[2]["dispx"] = EDispX;
+        stringtoint[2]["dispy"] = EDispY;
+        stringtoint[2]["dispxy"] = EDispXY;
+        stringtoint[0]["ptdispx"] = EPtDispX;
+        stringtoint[0]["ptdispy"] = EPtDispY;
+        stringtoint[0]["ptdispxy"] = EPtDispXY;
+        stringtoint[0]["ptdispxyz"] = EPtDispXYZ;
+
+        stringtoint[2]["forcex"] = EForceX;
+        stringtoint[2]["forcey"] = EForceY;
+        stringtoint[2]["forcez"] = EForceZ;
+        stringtoint[2]["forcexy"] = EForceXY;
+        stringtoint[0]["ptforcex"] = EPtForceX;
+        stringtoint[0]["ptforcey"] = EPtForceY;
+        stringtoint[0]["ptforcez"] = EPtForceZ;
         stringtoint[0]["ptforcexy"] = EPtForceXY;
         reader.SetDimNamePhysical(stringtoint);
         reader.GeometricGmshMesh(file_name,gmesh);
@@ -924,10 +990,13 @@ void UpdateSonsMemory(TPZCompMesh* cmesh, TPZVec<int64_t>& subindexes, REAL rhof
         TPZCompEl* celson = cmesh->Element(subindexes[ison]);
         TPZCompElWithMem<TPZCompElH1<pzshape::TPZShapeQuad>>* celmem = dynamic_cast<TPZCompElWithMem<TPZCompElH1<pzshape::TPZShapeQuad>>*>(celson);
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(celson);
-        if (!celmem && !celmemtri) DebugStop();
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> > *celmemcube = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> >*>(celson);
+
+        if(!celmem && !celmemtri && !celmemcube) continue;
         TPZVec<int64_t> indices;
         if(celmem) celmem->GetMemoryIndices(indices);
-        else celmemtri->GetMemoryIndices(indices);
+        else if(celmemtri) celmemtri->GetMemoryIndices(indices);
+        else if(celmemcube) celmemcube->GetMemoryIndices(indices);
         for(int j = 1 ; j < indices.size() ; j++) {
             if (indices[0] != indices[j]) {
                 DebugStop(); // assuming same memory for the whole element!
@@ -936,7 +1005,8 @@ void UpdateSonsMemory(TPZCompMesh* cmesh, TPZVec<int64_t>& subindexes, REAL rhof
 
         TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
         if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
-        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemtri) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemcube) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemcube->Material());
         if (!mat) DebugStop();
         TPZOtiTopoDensity& densstruct = mat->MemItem(indices[0]);
         densstruct.fDen = rhofather;
@@ -954,10 +1024,12 @@ void InitializeElemSolOfRefElements(TPZCompMesh* cmesh) {
         if(!cel) continue;
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);
-        if(!celmem && !celmemtri) continue;
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> > *celmemcube = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> >*>(cel);
+        if(!celmem && !celmemtri && !celmemcube) continue;
         TPZVec<int64_t> indices;
         if(celmem) celmem->GetMemoryIndices(indices);
-        else celmemtri->GetMemoryIndices(indices);
+        else if(celmemtri) celmemtri->GetMemoryIndices(indices);
+        else if(celmemcube) celmemcube->GetMemoryIndices(indices);
         for(int j = 1 ; j < indices.size() ; j++) {
             if (indices[0] != indices[j]) {
                 DebugStop(); // assuming same memory for the whole element!
@@ -965,7 +1037,8 @@ void InitializeElemSolOfRefElements(TPZCompMesh* cmesh) {
         }
         TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
         if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
-        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemtri) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemcube) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemcube->Material());
         if(!mat) DebugStop();
         TPZOtiTopoDensity &densstruct = mat->MemItem(indices[0]);
         const STATE dens = densstruct.fDen;
@@ -985,10 +1058,12 @@ void InitializeElemSolOfElementsToVal(TPZCompMesh* cmesh, const REAL val) {
         if(!cel) continue;
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);
-        if(!celmem && !celmemtri) continue;
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> > *celmemcube = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> >*>(cel);
+        if(!celmem && !celmemtri && !celmemcube) continue;
         TPZVec<int64_t> indices;
         if(celmem) celmem->GetMemoryIndices(indices);
-        else celmemtri->GetMemoryIndices(indices);
+        else if(celmemtri) celmemtri->GetMemoryIndices(indices);
+        else if(celmemcube) celmemcube->GetMemoryIndices(indices);
         for(int j = 1 ; j < indices.size() ; j++) {
             if (indices[0] != indices[j]) {
                 DebugStop(); // assuming same memory for the whole element!
@@ -996,7 +1071,8 @@ void InitializeElemSolOfElementsToVal(TPZCompMesh* cmesh, const REAL val) {
         }
         TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
         if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
-        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemtri) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemcube) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemcube->Material());
         if(!mat) DebugStop();
         TPZOtiTopoDensity &densstruct = mat->MemItem(indices[0]);
         densstruct.fDen = val;
@@ -1049,10 +1125,13 @@ void calculateTotalEnergy(TPZCompMesh* cmesh) {
         if(gel->HasSubElement()) continue;
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> > *celmem = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeQuad> >*>(cel);
         TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> > *celmemtri = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeTriang> >*>(cel);
-        if(!celmem && !celmemtri) continue;
+        TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> > *celmemcube = dynamic_cast<TPZCompElWithMem <TPZCompElH1<pzshape::TPZShapeCube> >*>(cel);
+
+        if(!celmem && !celmemtri && !celmemcube) continue;
         TPZVec<int64_t> indices;
         if(celmem) celmem->GetMemoryIndices(indices);
-        else celmemtri->GetMemoryIndices(indices);
+        else if(celmemtri) celmemtri->GetMemoryIndices(indices);
+        else if(celmemcube) celmemcube->GetMemoryIndices(indices);
             
         for(int j = 1 ; j < indices.size() ; j++) {
             if (indices[0] != indices[j]) {
@@ -1061,11 +1140,13 @@ void calculateTotalEnergy(TPZCompMesh* cmesh) {
         }
         TPZMatWithMem<TPZOtiTopoDensity>* mat = nullptr;
         if(celmem) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmem->Material());
-        else mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
-        
-        TPZElasticity2D* matElas = nullptr;
-        if(celmem) matElas = dynamic_cast<TPZElasticity2D*>(celmem->Material());
-        else matElas = dynamic_cast<TPZElasticity2D*>(celmemtri->Material());
+        else if(celmemtri) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemtri->Material());
+        else if(celmemcube) mat = dynamic_cast<TPZMatWithMem<TPZOtiTopoDensity>*>(celmemcube->Material());
+
+        TPZMaterialT<STATE>* matElas = dynamic_cast<TPZMaterialT<STATE>*>(mat);        
+        // TPZElasticity2D* matElas = nullptr;
+        // if(celmem) matElas = dynamic_cast<TPZElasticity2D*>(celmem->Material());
+        // else matElas = dynamic_cast<TPZElasticity2D*>(celmemtri->Material());
 
         if(!mat) DebugStop();
         if(!matElas) DebugStop();
