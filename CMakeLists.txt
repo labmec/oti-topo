@@ -24,10 +24,10 @@ add_custom_target( GlobalFiles SOURCES ${PZ_SRC})
 
 
 # creating the projects
-add_executable(oti-topo otitopo.cpp)
+add_executable(oti-topo otitopo.cpp TPZElasticity2DOtiTopo.cpp TPZElasticity3DOtiTopo.cpp TPZHelmholtz.cpp)
 target_link_libraries(oti-topo PUBLIC NeoPZ::pz)
 
-add_executable(darcyzinho darcyzinho.cpp)
+add_executable(darcyzinho darcyzinho.cpp TPZElasticity2DOtiTopo.cpp TPZElasticity3DOtiTopo.cpp TPZHelmholtz.cpp)
 target_link_libraries(darcyzinho PUBLIC NeoPZ::pz)
 
 

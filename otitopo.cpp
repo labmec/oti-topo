@@ -37,6 +37,7 @@
 #include "TPZElementMatrixT.h"
 #include "filterstruct.h"
 #include "TPZRefPatternTools.h"
+#include "TPZHelmholtz.h"
 
 using namespace std;
 
@@ -65,22 +66,27 @@ void InitializeElemSolOfRefElements(TPZCompMesh* cmesh);
 void InitializeElemSolOfElementsToVal(TPZCompMesh* cmesh, const REAL val);
 void CreateNeighVec(TPZVec<std::set<int>>& neighVec, TPZGeoMesh* gmesh);
 void calculateTotalEnergy(TPZCompMesh* cmesh);
+void ApplyHelmholtzFilter(TPZCompMesh* cmesh);
 
 // ------------------ Global parameters ----------
 // -----------------------------------------------
 
+bool gSinglePointMemory = true; // from tpzcompelwithmem.h
 REAL gVolInit = 0.;
-const int global_nthread = 8;
+const int global_nthread = 32;
 const bool isUseFilter = true;
+const bool isUseHelmholtzFilter = false;
 const bool isUseRef = false;
 const bool isRefInitMesh = false;
 const bool isRefInitMeshCmesh = false;
+
 // const std::string plotfile = "postprocess_noref";
 // const std::string plotfile = "postprocess_ref";
 // const std::string plotfile = "postprocess_uns";
 // const std::string plotfile = "postprocess_refgeoel";
 // const std::string plotfile = "postprocess_refgeoel";
-const std::string plotfile = "postprocess_cube";
+// const std::string plotfile = "postprocess_cube";
+const std::string plotfile = "postprocess";
 
 // ------------------ Main -----------------------
 // -----------------------------------------------
@@ -96,7 +102,7 @@ int main() {
     REAL filterRadius = 1.5;
 
     bool isReadFromGmsh = true;
-    bool is3D = true;
+    bool is3D = false;
     TPZGeoMesh* gmesh = nullptr;
     if(is3D){
         filterRadius = 0.15;
@@ -480,19 +486,24 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
 
     // Apply filter    
     if(isUseFilter){
-        for (int i = 0; i < dcvec.size(); i++) {
-            if (!isCompVec[i]) {
-                continue;
+        if(isUseHelmholtzFilter){
+            ApplyHelmholtzFilter(cmesh);
+        }
+        else{
+            for (int i = 0; i < dcvec.size(); i++) {
+                if (!isCompVec[i]) {
+                    continue;
+                }
+                TPZCompEl* cel = cmesh->Element(i);
+                if(!cel) DebugStop();
+                
+                if (filterVec[i].findex == -1) DebugStop();        
+    
+                const REAL dcdxe = filterVec[i].ComputeFiltereddcdxe(dcvec, rhovec, elvolvec, cmesh);
+                // if(dcdxe > 0)
+                //     DebugStop(); // filter cannot change sign of dc
+                dcvecfilter[i] = dcdxe;
             }
-            TPZCompEl* cel = cmesh->Element(i);
-            if(!cel) DebugStop();
-            
-            if (filterVec[i].findex == -1) DebugStop();        
-
-            const REAL dcdxe = filterVec[i].ComputeFiltereddcdxe(dcvec, rhovec, elvolvec, cmesh);
-            // if(dcdxe > 0)
-            //     DebugStop(); // filter cannot change sign of dc
-            dcvecfilter[i] = dcdxe;
         }
     }
     else{
@@ -579,7 +590,7 @@ const bool LoadMemoryIntoElementSolution(TPZLinearAnalysis& an, TPZCompMesh *&cm
     }
 
     // Check if convergence was reached at this step based on volume fraction and energy
-    const REAL voltol = 1.e-4, ctol = 1e-3;
+    const REAL voltol = 1.e-5, ctol = 1e-4;
     const int niterconvlimit = 8;
     bool isConv = false;
     const bool isConvVolFrac = fabs(volFrac - targetVolFrac) < voltol;
@@ -1170,6 +1181,39 @@ void calculateTotalEnergy(TPZCompMesh* cmesh) {
         cnew += E;        
     }
     std:: cout << "cnew = " << cnew << std::endl;
+}
+
+// -----------------------------------------------
+// -----------------------------------------------
+
+void ApplyHelmholtzFilter(TPZCompMesh* cmesh, const int pordint, const STATE r) {
+    // const int dim = cmesh->Dimension();
+    // TPZCompMesh* cmesh2 = new TPZCompMesh(cmesh->Reference());
+    // cmesh2->SetDimModel(dim);
+    // cmesh2->SetDefaultOrder(pordint);
+    // cmesh2->SetAllCreateFunctionsContinuous();
+
+    // // Create Helmholtz material
+    // const int helmholtzMatId = 1; // Assuming 1 is the ID for Helmholtz material
+    // TPZHelmholtz* helmholtzMat = new TPZHelmholtz(helmholtzMatId,dim,r);
+    // cmesh2->InsertMaterialObject(helmholtzMat);
+
+    // // Auto build the computational mesh
+    // cmesh2->AutoBuild();
+    // auto getSolutionAt = [cmesh](int64_t elIndex, const TPZVec<REAL>& qsi) -> TPZVec<STATE> {
+    //     TPZCompEl* cel = cmesh->Element(elIndex);
+    //     if (!cel) {
+    //         DebugStop();
+    //     }
+    //     TPZInterpolationSpace* intel = dynamic_cast<TPZInterpolationSpace*>(cel);
+    //     if (!intel) {
+    //         DebugStop();
+    //     }
+    //     TPZMaterialDataT<STATE> data;
+    //     intel->InitMaterialData(data);
+    //     intel->ComputeSolution(qsi, data);
+    //     return data.sol[0];
+    // };
 }
 
 // -----------------------------------------------
