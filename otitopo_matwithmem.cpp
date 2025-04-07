@@ -19,10 +19,10 @@
 #include <TPZSimpleTimer.h>
 #include "pzvisualmatrix.h"
 #include "TPZSYSMPMatrix.h"
-#include "TPZVTKGenerator.h"//#include <Elasticity/TPZElasticity3D.h>
+#include "TPZVTKGenerator.h"
+//#include <Elasticity/TPZElasticity3D.h>
 #include "TPZElasticity2DOtiTopo.h"
 #include "TPZElasticity3DOtiTopo.h"
-#include "TPZElasticity2DOtiTopoMP.h"
 #include "TPZAnalyticSolution.h"
 #include "TPZGeoMeshTools.h"
 #include <TPZGmshReader.h>
@@ -38,7 +38,6 @@
 #include "filterstruct.h"
 #include "TPZRefPatternTools.h"
 #include "TPZHelmholtz.h"
-#include <TPZMultiphysicsCompMesh.h>
 
 using namespace std;
 
@@ -52,8 +51,6 @@ TPZGeoMesh* ReadMeshFromGmsh(std::string file_name);
 TPZGeoMesh* ReadMeshFromGmsh3D(std::string file_name);
 void CreateBCs(TPZGeoMesh* gmesh);
 TPZCompMesh* CreateH1CMesh(TPZGeoMesh* gmesh, const int pord, TElasticity2DAnalytic *elas);
-TPZCompMesh* CreateDensityCMesh(TPZGeoMesh* gmesh, const int pord);
-TPZMultiphysicsCompMesh* CreateElasticityMultiphysicsMesh(TPZManVector<TPZCompMesh*, 2>& mesh_vec, const int pord, const REAL E, const REAL nu);
 void SolveProblemDirect(TPZLinearAnalysis &an, TPZCompMesh *cmesh);
 void PrintResults(TPZLinearAnalysis &an, TPZCompMesh *cmesh);
 void SetPointBC(TPZGeoMesh *gr, TPZVec<REAL> &x, int bc);
@@ -81,6 +78,7 @@ const bool isUseFilter = true;
 const bool isUseHelmholtzFilter = false;
 const bool isUseRef = false;
 const bool isRefInitMesh = false;
+const bool isRefInitMeshCmesh = false;
 
 // const std::string plotfile = "postprocess_noref";
 // const std::string plotfile = "postprocess_ref";
@@ -100,12 +98,10 @@ int main() {
 #endif
     
     const int pord = 1;
-    const int pordRho = 0;
     const int niterations = 400;    
     REAL filterRadius = 1.5;
 
     bool isReadFromGmsh = true;
-    
     bool is3D = false;
     TPZGeoMesh* gmesh = nullptr;
     if(is3D){
@@ -116,35 +112,82 @@ int main() {
         gmesh = ReadMeshFromGmsh("../meshes/beam80_40.msh");
 
     
+    // int firstindex = 0;
+    // for(int i = 0 ; i < gmesh->NElements() ; i++){
+    //     TPZGeoEl* gel = gmesh->ElementVec()[i];
+    //     if(!gel) continue;
+    //     if (gel->Dimension() == gmesh->Dimension()){
+    //         firstindex = gel->Index();
+    //         break;
+    //     }
+    // }
+
+    // Create a geoel for the first node in the mesh
+    // TPZGeoElBC gelbc(gmesh->Element(firstindex),3,50);
+
+    // std::set<int> matidref;
+    // matidref.insert(50);
+    // gRefDBase.InitializeRefPatterns(gmesh->Dimension());
+    // TPZRefPatternTools::RefineDirectional(gmesh, matidref);
+
+    
     TPZVec<TPZGeoEl*> sons;
+    // gmesh->Element(firstindex)->Divide(sons);
+
     
     if(isRefInitMesh){
         TPZCheckGeom check(gmesh);
         check.UniformRefine(1);
     }
+        
+    // FilterStruct filter1(firstindex);
+    // filter1.ComputeNeighIndexHf(gmesh, 0.6);
+    // filter1.Print(std::cout); 
 
     // std::ofstream out("gmesh.vtk");     
-    // TPZVTKGeoMesh::PrintGMeshVTK(gmesh, out);    
+    // TPZVTKGeoMesh::PrintGMeshVTK(gmesh, out);
 
     TElasticity2DAnalytic *elas = new TElasticity2DAnalytic;
-    elas->gE = 1.; //206.8150271873455;
+    elas->gE = 1.;//206.8150271873455;
     elas->gPoisson = 0.3;
-    elas->fProblemType = TElasticity2DAnalytic::EStretchx; // useless for now
+    elas->fProblemType = TElasticity2DAnalytic::EStretchx;
     TPZCompMesh* cmeshH1 = CreateH1CMesh(gmesh,pord,elas);
 
-    
-    TPZCompMesh* cmeshRho = CreateDensityCMesh(gmesh, pordRho);
+    const bool interpolatesolinit = false;
+    if (isRefInitMeshCmesh){
+        int nels = cmeshH1->NElements();
+        std::set<TPZCompEl*> compels;
+        for (int i = 0; i < cmeshH1->NElements(); i++) {
+            TPZCompEl* el = cmeshH1->Element(i);
+            if (el) {
+                compels.insert(el);
+            }
+        }
+
+        for(auto cel : compels) {
+            if(!cel) DebugStop();
+            int64_t celindex = cel->Index();
+            TPZGeoEl * gel = cel->Reference();
+            if(!gel) continue;
+            if(gel->Dimension() != gmesh->Dimension()) continue;
+            TPZVec<int64_t> subindexes;
+            // TPZManVector< TPZGeoEl *,20 > filhos;
+            // if(!gel->HasSubElement()) gel->Divide(filhos);
+            if(!gel->HasSubElement()) cel->Divide(cel->Index(),subindexes,interpolatesolinit);                        
+            if(cmeshH1->ElementVec()[celindex] != nullptr) DebugStop();            
+        }
+        
+        // delete cmeshH1;
+        // cmeshH1 = CreateH1CMesh(gmesh,pord,elas);
+        cmeshH1->AdjustBoundaryElements();
+        cmeshH1->CleanUpUnconnectedNodes();
+        cmeshH1->InitializeBlock();
+        cmeshH1->ExpandSolution();
+    }
 
     std::ofstream out("gmesh.vtk");
     TPZVTKGeoMesh::PrintGMeshVTK(gmesh, out);    
     // TPZVTKGeoMesh::PrintCMeshVTK(cmeshH1, outcmesh);
-
-    TPZManVector<TPZCompMesh*, 2> mesh_vec(2);
-    mesh_vec[0] = cmeshH1;
-    mesh_vec[1] = cmeshRho;
-    // TPZMultiphysicsCompMesh* mpmesh = CreateMultiphysicsMesh(mesh_vec, pord);
-    TPZMultiphysicsCompMesh* mp_cmeshElas = CreateElasticityMultiphysicsMesh(mesh_vec, pord, elas->gE, elas->gPoisson);    
-  
 
     // Compute FilterStruct for all the elements in the mesh
     TPZVec<FilterStruct> filterVec;
@@ -210,71 +253,26 @@ TPZGeoMesh* CreateGMesh(int ndivx, int ndivy) {
 // -----------------------------------------------
 // -----------------------------------------------
 
-TPZMultiphysicsCompMesh* CreateElasticityMultiphysicsMesh(TPZManVector<TPZCompMesh*, 2>& mesh_vec, const int pord, const REAL E, const REAL nu) {
-    TPZGeoMesh* gmesh = mesh_vec[0]->Reference();
-    const int dim = gmesh->Dimension();
-    TPZMultiphysicsCompMesh* mp_cmesh = new TPZMultiphysicsCompMesh(gmesh);
-    mp_cmesh->SetDefaultOrder(pord);
-    mp_cmesh->SetDimModel(gmesh->Dimension());
-    mp_cmesh->SetAllCreateFunctionsMultiphysicElem();
-
-    TPZElasticity2DOtiTopoMP* mat = new TPZElasticity2DOtiTopoMP(EDomain, E, nu, 0., 0., true);
-    mp_cmesh->InsertMaterialObject(mat);
-
-    const int diri = 0, neu = 1, mixed = 2, normaltrac = 4;
-
-    
-    // Pointer bcs
-    if(dim == 2){
-        TPZFMatrix<STATE> val1(2,2,0.);
-        TPZManVector<STATE> val2(2,0.);
-        val1(1,1) = mat->BigNumber();
-        auto* BCCondFixed1 = mat->CreateBC(mat, EPtDispXY, mixed, val1, val2);
-        mp_cmesh->InsertMaterialObject(BCCondFixed1);
-        
-        val1.Zero();
-        val1(0,0) = mat->BigNumber();
-        auto* BCCondSym = mat->CreateBC(mat, EDispX, mixed, val1, val2);
-        mp_cmesh->InsertMaterialObject(BCCondSym);
-        
-        val1.Zero();
-        val2[1] = -1.0;
-        auto* BCCondPoint = mat->CreateBC(mat, EPtForceY, neu, val1, val2);
-        mp_cmesh->InsertMaterialObject(BCCondPoint);
-    }
-    else {
-        TPZFMatrix<STATE> val1(3,3,0.);
-        TPZManVector<STATE> val2(3,0.);        
-        auto* BCCondFixed1 = mat->CreateBC(mat, EPtDispXYZ, diri, val1, val2);
-        mp_cmesh->InsertMaterialObject(BCCondFixed1);
-            
-        val2[2] = -1.0;
-        auto* BCCondPoint = mat->CreateBC(mat, EPtForceZ, neu, val1, val2);
-        mp_cmesh->InsertMaterialObject(BCCondPoint);
-    }
-    
-    mp_cmesh->ApproxSpace().Style() = TPZCreateApproximationSpace::EMultiphysics;
-    TPZManVector<int, 2> active(2, 1);
-    // active[1] = 0;
-    mp_cmesh->BuildMultiphysicsSpace(active, mesh_vec);
-   
-    return mp_cmesh;
-}
-
-// -----------------------------------------------
-// -----------------------------------------------
-
 TPZCompMesh* CreateH1CMesh(TPZGeoMesh* gmesh, const int pord, TElasticity2DAnalytic *elas) {
     
     TPZCompMesh* cmesh = new TPZCompMesh(gmesh);
     const int dim = gmesh->Dimension();
     cmesh->SetDimModel(dim);
     cmesh->SetDefaultOrder(pord);
-    cmesh->SetAllCreateFunctionsContinuous();
-        
-    auto mat = new TPZNullMaterial(EDomain);
-    mat->SetNStateVariables(2);
-    mat->SetNStateVariables(dim);
+    cmesh->SetAllCreateFunctionsContinuousWithMem();
+    
+    const STATE E = elas->gE, nu = elas->gPoisson;
+    TPZManVector<STATE> force = {0,0,0};
+    TPZMaterialT<STATE>* mat = nullptr;
+    if(dim == 3) {
+        TPZManVector<STATE,3> force = {0.,0.,0.};
+        mat = new TPZElasticity3DOtiTopo(EDomain, E, nu, force);
+    }
+    else {
+        mat = new TPZElasticity2DOtiTopo(EDomain, E, nu, 0., 0., true);
+    }
+    // mat->SetExactSol(elas->ExactSolution(), 2);
+//    mat->SetForcingFunction(elas->ForceFunc(), 4);
     cmesh->InsertMaterialObject(mat);
       
     const int diri = 0, neu = 1, mixed = 2, normaltrac = 4;
@@ -1216,30 +1214,6 @@ void ApplyHelmholtzFilter(TPZCompMesh* cmesh, const int pordint, const STATE r) 
     //     intel->ComputeSolution(qsi, data);
     //     return data.sol[0];
     // };
-}
-
-// -----------------------------------------------
-// -----------------------------------------------
-
-TPZCompMesh* CreateDensityCMesh(TPZGeoMesh* gmesh, const int pord) {
-    TPZCompMesh* cmesh = new TPZCompMesh(gmesh);
-    const int dim = gmesh->Dimension();
-    cmesh->SetDimModel(dim);
-    cmesh->SetDefaultOrder(pord);
-    if (pord == 0) {
-        cmesh->SetAllCreateFunctionsDiscontinuous();
-    }
-    else {
-        cmesh->SetAllCreateFunctionsContinuous();
-    }
-
-    auto mat = new TPZNullMaterial(EDomain);
-    cmesh->InsertMaterialObject(mat);
-
-    // Auto build the computational mesh
-    cmesh->AutoBuild();
-    return cmesh;
-
 }
 
 // -----------------------------------------------
